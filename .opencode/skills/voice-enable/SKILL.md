@@ -11,6 +11,26 @@ The agent's job: read the developer's backend, generate a tool registry, produce
 training data, and optionally train and serve the voice pipeline. The developer
 just says "voice-enable my API" and the agent handles everything.
 
+## Phase 0 — Install va-sdk (do this first)
+
+Before anything else, install the package:
+
+```bash
+# If va-sdk is a sibling directory (common during development):
+pip install "$(cd .. && pwd)/va-sdk/packages/sdk"
+
+# Or from git:
+pip install "va-sdk @ git+file://$HOME/...va-sdk/packages/sdk"
+
+# Or if published to PyPI:
+pip install va-sdk
+```
+
+Verify with: `python -c "from va_sdk import Tool; print('ok')"`
+
+Also install backend dependencies needed for the generated `voice_tools.py`:
+`httpx` (used by the `BankAPI` client in the tool registry).
+
 ## Phase 1 — Discover the Backend
 
 First, understand what the backend can do:
