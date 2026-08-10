@@ -10,6 +10,7 @@ from pathlib import Path
 
 DEFAULT_MLX_SLM_PORT = 8002
 DEFAULT_SERVER_PORT = 8766
+DEFAULT_BACKEND_PORT = 8001
 DEFAULT_ASR_BACKEND = "whisper"
 DEFAULT_TTS_BACKEND = "kokoro"
 
@@ -197,10 +198,91 @@ def validate(args: list[str]) -> None:
     print(f"✓ Validated {len(toolkit.tools)} tool(s) — all good.")
 
 
+def demo(args: list[str]) -> None:
+    """Start the full example stack (backend + voice server)."""
+    import threading
+
+    example = "banking" if not args else args[0]
+    repo_root = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent.parent
+
+    backend_path = repo_root / "examples" / example / "backend"
+    if not backend_path.exists():
+        print(f"Error: example '{example}' not found at {backend_path}")
+        sys.exit(1)
+
+    tools_path = repo_root / "examples" / example / "tools.py"
+    if not tools_path.exists():
+        print(f"Error: tools.py not found at {tools_path}")
+        sys.exit(1)
+
+    backend_port = DEFAULT_BACKEND_PORT
+    slm_port = DEFAULT_MLX_SLM_PORT
+    voice_port = DEFAULT_SERVER_PORT
+
+    print(f"=== va-sdk demo: {example} ===")
+    print(f"  Backend:    http://localhost:{backend_port}")
+    print(f"  Voice API:  http://localhost:{voice_port}")
+    print(f"  Dashboard:  cd packages/frontend && npm run dev")
+    print()
+
+    os.environ["VA_SDK_TOOL_PATH"] = str(tools_path.resolve())
+    os.environ["VA_SDK_SLM_PORT"] = str(slm_port)
+    os.environ["VA_SDK_ASR_BACKEND"] = DEFAULT_ASR_BACKEND
+    os.environ["VA_SDK_TTS_BACKEND"] = DEFAULT_TTS_BACKEND
+
+    def _start_backend():
+        import uvicorn
+
+        sys.path.insert(0, str(backend_path.resolve()))
+        uvicorn.run(
+            "app.main:app",
+            host="0.0.0.0",
+            port=backend_port,
+            reload=False,
+            log_level="warning",
+        )
+
+    backend_thread = threading.Thread(target=_start_backend, daemon=True)
+    backend_thread.start()
+
+    import time
+
+    time.sleep(2)
+    print("  Backend started.")
+
+    # Seed a demo user
+    try:
+        import httpx
+
+        resp = httpx.post(
+            f"http://localhost:{backend_port}/auth/register",
+            json={"email": "demo@bankco.io", "password": "demo1234"},
+        )
+        if resp.status_code == 201 or (
+            resp.status_code == 400 and "already" in resp.text.lower()
+        ):
+            print("  Demo user ready (demo@bankco.io / demo1234)")
+    except Exception:
+        print("  (demo user seed skipped — backend may not be ready)")
+
+    print("  Starting voice server...")
+    print()
+
+    import uvicorn
+
+    uvicorn.run(
+        "va_sdk.server:app",
+        host="0.0.0.0",
+        port=voice_port,
+        reload=False,
+    )
+
+
 COMMANDS = {
     "serve": serve,
     "generate": generate,
     "validate": validate,
+    "demo": demo,
 }
 
 
