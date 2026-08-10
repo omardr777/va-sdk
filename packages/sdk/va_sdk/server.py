@@ -61,6 +61,10 @@ def _build_pipeline():
     if backend == "openai":
         from va_sdk.models.openai_backend import OpenAIBackend
         model = OpenAIBackend(api_key=api_key, model=model_name)
+    elif backend in ("local", "mlx"):
+        from va_sdk.models.local_backend import LocalBackend
+        port = _config.get("port", os.environ.get("VA_SDK_MODEL_PORT", "8080"))
+        model = LocalBackend(base_url=f"http://localhost:{port}/v1", model=model_name or "local")
     else:
         from va_sdk.models.mlx_backend import MLXBackend
         slm_port = int(os.environ.get("VA_SDK_SLM_PORT", "8002"))
@@ -383,6 +387,75 @@ async def generate_dataset(request: Request):
         _collector.emit(event_generate_complete(r))
 
     return r
+
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+_training_jobs: dict[str, dict] = {}
+
+
+@app.post("/api/train")
+async def start_training(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    modal_token = body.get("modal_token", "")
+    model_name = body.get("model", "Qwen/Qwen2.5-0.5B-Instruct")
+    train_path = body.get("train_path", "./data/train.jsonl")
+    test_path = body.get("test_path", "./data/test.jsonl")
+
+    if not modal_token:
+        return JSONResponse({"error": "modal_token is required"}, status_code=400)
+
+    import uuid
+    job_id = str(uuid.uuid4())[:8]
+
+    _training_jobs[job_id] = {
+        "id": job_id,
+        "status": "submitted",
+        "model": model_name,
+        "train_path": train_path,
+        "test_path": test_path,
+        "created_at": __import__("time").time(),
+        "output_path": f"./models/va-sdk-{job_id}",
+    }
+
+    def _run():
+        try:
+            _training_jobs[job_id]["status"] = "running"
+            from va_sdk.dataset.modal_train import ModalTrainer
+            trainer = ModalTrainer(token=modal_token)
+            result = trainer.train(train_path, test_path, model=model_name)
+            _training_jobs[job_id]["status"] = "done"
+            _training_jobs[job_id]["result"] = result
+            if _collector:
+                from va_sdk.telemetry import event_generate_complete
+                _collector.emit(event_generate_complete({
+                    "type": "training_complete",
+                    "job_id": job_id,
+                    "output_path": _training_jobs[job_id]["output_path"],
+                }))
+        except Exception as e:
+            _training_jobs[job_id]["status"] = "failed"
+            _training_jobs[job_id]["error"] = str(e)
+
+    import threading
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    return {"job_id": job_id, "status": "submitted"}
+
+
+@app.get("/api/train/{job_id}")
+async def get_training_status(job_id: str):
+    job = _training_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    return job
 
 
 # ---------------------------------------------------------------------------

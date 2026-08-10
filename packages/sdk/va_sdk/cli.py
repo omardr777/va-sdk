@@ -23,7 +23,7 @@ def serve(args: list[str]) -> None:
     tool_path = None
     asr_backend = DEFAULT_ASR_BACKEND
     tts_backend = DEFAULT_TTS_BACKEND
-    model_backend = "mlx"
+    model_backend = "openai"
     api_key: str | None = None
     model_name: str = ""
 
@@ -49,7 +49,7 @@ def serve(args: list[str]) -> None:
     if tool_path is None:
         print("Error: --tools <path> is required")
         print("Usage: va-sdk serve --tools ./voice_tools.py [--port 8766] "
-              "[--backend mlx|openai] [--model gpt-4o] [--api-key sk-...] "
+              "[--backend openai|local|mlx] [--model gpt-4o] [--api-key sk-...] "
               "[--asr-backend whisper] [--tts-backend kokoro|mac-say]")
         sys.exit(1)
 
