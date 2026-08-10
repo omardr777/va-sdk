@@ -5,7 +5,4 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   base: "/dashboard/",
   plugins: [react(), tailwindcss()],
-  resolve: {
-    preserveSymlinks: true,
-  },
 })
