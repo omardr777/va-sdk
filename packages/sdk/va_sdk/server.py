@@ -22,6 +22,7 @@ app.add_middleware(
 )
 
 _pipeline = None
+_collector = None
 
 
 def _load_toolkit():
@@ -46,12 +47,16 @@ def _build_pipeline():
     from va_sdk.models.mlx_backend import MLXBackend
     from va_sdk.orchestrator import VoiceOrchestrator
     from va_sdk.pipeline import VoicePipeline
+    from va_sdk.telemetry import ConsoleTelemetry, InMemoryCollector
     from va_sdk.tts import KokoroTTS
+
+    global _collector
+    _collector = InMemoryCollector(delegate=ConsoleTelemetry())
 
     toolkit = _load_toolkit()
     slm_port = int(os.environ.get("VA_SDK_SLM_PORT", "8002"))
     model = MLXBackend(base_url=f"http://localhost:{slm_port}/v1")
-    orchestrator = VoiceOrchestrator(toolkit, model)
+    orchestrator = VoiceOrchestrator(toolkit, model, telemetry=_collector)
 
     asr_backend = os.environ.get("VA_SDK_ASR_BACKEND", "whisper")
     tts_backend = os.environ.get("VA_SDK_TTS_BACKEND", "kokoro")
@@ -68,7 +73,7 @@ def _build_pipeline():
         from va_sdk.tts import MacSayTTS
         tts = MacSayTTS()
 
-    return VoicePipeline(orchestrator, asr=asr, tts=tts)
+    return VoicePipeline(orchestrator, asr=asr, tts=tts, telemetry=_collector)
 
 
 def _get_pipeline():
@@ -118,6 +123,16 @@ def startup():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/events")
+async def get_events(limit: int = 50, type: str | None = None):
+    if _collector is None:
+        return {"events": []}
+
+    event_types = type.split(",") if type else None
+    events = _collector.recent(limit=limit, event_types=event_types)
+    return {"events": events}
 
 
 @app.post("/orchestrate")

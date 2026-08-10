@@ -4,6 +4,16 @@ import json
 import time
 
 from va_sdk.models.backend import ModelBackend, ToolCall
+from va_sdk.telemetry import (
+    ConsoleTelemetry,
+    TelemetryBackend,
+    TelemetryEvent,
+    event_error,
+    event_slot_fill,
+    event_slm_call,
+    event_tool_execute,
+    event_turn_complete,
+)
 from va_sdk.tool import Toolkit, ToolError
 
 
@@ -53,11 +63,13 @@ class VoiceOrchestrator:
         model: ModelBackend,
         *,
         system_prompt: str | None = None,
+        telemetry: TelemetryBackend | None = None,
         debug: bool = False,
     ):
         self.toolkit = toolkit
         self.model = model
         self.system_prompt = system_prompt or SYSTEM_PROMPT_TEMPLATE
+        self.telemetry = telemetry or ConsoleTelemetry()
         self.debug = debug
         self.conversation_history: list[dict] = []
         self.last_timings: dict[str, float] = {}
@@ -104,6 +116,11 @@ class VoiceOrchestrator:
 
         response = self._handle_function_call(function_call, auth_context or {})
         self.last_timings["turn_total_ms"] = (time.perf_counter() - turn_start) * 1000
+
+        self.telemetry.emit(event_turn_complete(
+            transcript, response, dict(self.last_timings),
+        ))
+
         return response
 
     def reset(self) -> None:
@@ -113,7 +130,13 @@ class VoiceOrchestrator:
         tools = self.toolkit.to_openai_tools()
         messages = [{"role": "system", "content": self.system_prompt}] + \
                    self.conversation_history[-MAX_CONTEXT_MESSAGES:]
-        return self.model.invoke(tools, messages)
+        result = self.model.invoke(tools, messages)
+        if isinstance(result, ToolCall):
+            self.telemetry.emit(event_slm_call(
+                result.name, result.arguments,
+                getattr(self.model, "last_latency_ms", 0),
+            ))
+        return result
 
     def _handle_function_call(
         self, fn: ToolCall, auth_context: dict
@@ -143,8 +166,11 @@ class VoiceOrchestrator:
         prompts = tool.slot_prompts
         questions = [prompts.get(arg, f"the {arg.replace('_', ' ')}") for arg in missing]
         if len(questions) == 1:
-            return f"Could you provide {questions[0]}?"
-        return f"Could you provide {', '.join(questions[:-1])}, and {questions[-1]}?"
+            response = f"Could you provide {questions[0]}?"
+        else:
+            response = f"Could you provide {', '.join(questions[:-1])}, and {questions[-1]}?"
+        self.telemetry.emit(event_slot_fill(tool.name, missing, response))
+        return response
 
     def _execute_and_respond(
         self, tool: Tool, arguments: dict, auth_context: dict
@@ -163,12 +189,23 @@ class VoiceOrchestrator:
             api_result = tool._call(api, **arguments)
         except ToolError as exc:
             self.last_timings["backend_ms"] = (time.perf_counter() - started) * 1000
+            self.telemetry.emit(event_error(tool.name, exc.message, exc.kind))
+            self.telemetry.emit(event_tool_execute(
+                tool.name, arguments, {}, self.last_timings["backend_ms"], False,
+            ))
             return self._format_error(tool, exc)
         except Exception as exc:
             self.last_timings["backend_ms"] = (time.perf_counter() - started) * 1000
+            self.telemetry.emit(event_error(tool.name, str(exc), "generic"))
+            self.telemetry.emit(event_tool_execute(
+                tool.name, arguments, {}, self.last_timings["backend_ms"], False,
+            ))
             return self._format_error(tool, ToolError.generic(str(exc)))
 
         self.last_timings["backend_ms"] = (time.perf_counter() - started) * 1000
+        self.telemetry.emit(event_tool_execute(
+            tool.name, arguments, api_result, self.last_timings["backend_ms"], True,
+        ))
 
         if tool.map_result:
             api_result = tool.map_result(api_result, arguments)

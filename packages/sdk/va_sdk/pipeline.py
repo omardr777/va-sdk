@@ -14,6 +14,11 @@ import numpy as np
 
 from va_sdk.asr import ASRBackend, WhisperASR
 from va_sdk.orchestrator import VoiceOrchestrator
+from va_sdk.telemetry import (
+    TelemetryBackend,
+    event_asr,
+    event_tts,
+)
 from va_sdk.tts import KokoroTTS, TTSBackend
 
 
@@ -54,11 +59,13 @@ class VoicePipeline:
         asr: ASRBackend | None = None,
         tts: TTSBackend | None = None,
         session_store: SessionStore | None = None,
+        telemetry: TelemetryBackend | None = None,
     ):
         self.orchestrator = orchestrator
         self.asr = asr
         self.tts = tts
         self.sessions = session_store or InMemoryStore()
+        self.telemetry = telemetry
 
     def process(
         self,
@@ -82,6 +89,9 @@ class VoicePipeline:
 
         asr_at = time.perf_counter()
         timings["asr_ms"] = (asr_at - decoded_at) * 1000
+
+        if self.telemetry and transcript:
+            self.telemetry.emit(event_asr(transcript, timings["asr_ms"]))
 
         if not transcript.strip():
             return PipelineResult(
@@ -117,6 +127,9 @@ class VoicePipeline:
         tts_at = time.perf_counter()
         timings["tts_ms"] = (tts_at - orch_at) * 1000
         timings["total_ms"] = (tts_at - started) * 1000
+
+        if self.telemetry and response:
+            self.telemetry.emit(event_tts(response, timings["tts_ms"]))
 
         return PipelineResult(
             transcript=transcript,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface ToolInfo {
   name: string;
@@ -14,11 +14,20 @@ const SAMPLE_TOOLS: ToolInfo[] = [
 
 const DEFAULT_BACKEND = "http://127.0.0.1:8766";
 
+interface LogEntry {
+  type: "user" | "assistant" | "tool" | "error" | "stage";
+  text: string;
+  timestamp: number;
+}
+
 export default function VoicePlayground() {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND);
   const [token, setToken] = useState("");
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [statusMsg, setStatusMsg] = useState("");
+  const [log, setLog] = useState<LogEntry[]>([]);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const seenTimestamps = useRef<Set<number>>(new Set());
 
   const testConnection = async () => {
     setConnectionStatus("testing");
@@ -28,7 +37,7 @@ export default function VoicePlayground() {
       const res = await fetch(`${backendUrl}/health`, { headers });
       if (res.ok) {
         setConnectionStatus("ok");
-        setStatusMsg("Connected successfully.");
+        setStatusMsg("Connected. Use the mic button.");
       } else {
         setConnectionStatus("error");
         setStatusMsg(`Server returned ${res.status}`);
@@ -36,6 +45,95 @@ export default function VoicePlayground() {
     } catch (err) {
       setConnectionStatus("error");
       setStatusMsg(err instanceof Error ? err.message : "Connection failed");
+    }
+  };
+
+  useEffect(() => {
+    if (connectionStatus !== "ok" && connectionStatus !== "testing") return;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${backendUrl}/events?limit=20&type=turn_complete,error,slm_call,tool_execute,slot_fill`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const events = data.events || [];
+
+        for (const evt of events) {
+          const ts = evt.timestamp_ms;
+          if (seenTimestamps.current.has(ts)) continue;
+          seenTimestamps.current.add(ts);
+
+          const d = evt.data || {};
+          if (evt.type === "turn_complete") {
+            if (d.transcript) {
+              setLog((prev) => [...prev, { type: "user", text: d.transcript, timestamp: ts }]);
+            }
+            if (d.response) {
+              setLog((prev) => [...prev, { type: "assistant", text: d.response, timestamp: ts }]);
+            }
+            if (d.timings) {
+              const timingStr = Object.entries(d.timings as Record<string, number>)
+                .map(([k, v]) => `${k.replace(/_ms$/, "")}: ${v.toFixed(0)}ms`)
+                .join(" | ");
+              setLog((prev) => [...prev, { type: "stage", text: `Timings: ${timingStr}`, timestamp: ts }]);
+            }
+          } else if (evt.type === "error") {
+            setLog((prev) => [...prev, {
+              type: "error",
+              text: `${d.tool_name || "tools"}: ${d.error_message}`,
+              timestamp: ts,
+            }]);
+          } else if (evt.type === "slm_call") {
+            setLog((prev) => [...prev, {
+              type: "tool",
+              text: `SLM → ${d.tool_name}(${JSON.stringify(d.arguments)}) [${d.latency_ms?.toFixed(0)}ms]`,
+              timestamp: ts,
+            }]);
+          } else if (evt.type === "tool_execute") {
+            const icon = d.success ? "✓" : "✗";
+            setLog((prev) => [...prev, {
+              type: "tool",
+              text: `${icon} API ${d.tool_name} [${d.latency_ms?.toFixed(0)}ms]`,
+              timestamp: ts,
+            }]);
+          } else if (evt.type === "slot_fill") {
+            setLog((prev) => [...prev, {
+              type: "stage",
+              text: `Slot fill: missing ${(d.missing_args || []).join(", ")} → "${d.elicitation_prompt}"`,
+              timestamp: ts,
+            }]);
+          }
+        }
+      } catch {
+        // ignore poll errors
+      }
+    };
+
+    poll();
+    pollRef.current = setInterval(poll, 1500);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [connectionStatus, backendUrl]);
+
+  const threadStyle = (entry: LogEntry) => {
+    switch (entry.type) {
+      case "user": return "justify-end";
+      case "assistant": return "justify-start";
+      case "tool": return "justify-center";
+      case "error": return "justify-center";
+      case "stage": return "justify-center";
+    }
+  };
+
+  const bubbleStyle = (entry: LogEntry) => {
+    switch (entry.type) {
+      case "user": return "bg-indigo-600 text-white rounded-br-sm";
+      case "assistant": return "bg-gray-100 text-gray-800 rounded-bl-sm";
+      case "tool": return "bg-purple-50 text-purple-700 text-xs font-mono";
+      case "error": return "bg-red-50 text-red-600 text-xs";
+      case "stage": return "bg-amber-50 text-amber-600 text-xs";
     }
   };
 
@@ -80,9 +178,20 @@ export default function VoicePlayground() {
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-slate-800 mb-3">Conversation Log</h2>
-          <div className="bg-slate-50 rounded-lg p-6 text-center text-slate-400 text-sm">
-            <p className="mb-1">No conversations yet.</p>
-            <p>Click the mic button to start a voice interaction.</p>
+          <div className="bg-slate-50 rounded-lg p-3 min-h-[300px] max-h-[400px] overflow-y-auto space-y-2">
+            {log.length === 0 ? (
+              <p className="text-center text-slate-400 text-sm pt-10">
+                Connect and use the mic button to see live events.
+              </p>
+            ) : (
+              log.map((entry, i) => (
+                <div key={i} className={`flex ${threadStyle(entry)}`}>
+                  <div className={`max-w-[90%] rounded-xl px-3 py-1.5 text-sm ${bubbleStyle(entry)}`}>
+                    {entry.text}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
