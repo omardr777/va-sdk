@@ -1,0 +1,28 @@
+[project]
+name = "va-sdk"
+version = "0.1.0"
+description = "Voice Assistant SDK — voice-enable your SaaS APIs with Small Language Models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Distil Labs"}]
+dependencies = [
+    "openai>=1.0.0",
+    "httpx>=0.25.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "sounddevice>=0.4.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx-lm>=0.14.0"]
+asr = ["openai-whisper>=20231117"]
+tts = ["kokoro-onnx>=0.2.0"]
+
+[project.scripts]
+va-sdk = "va_sdk.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
