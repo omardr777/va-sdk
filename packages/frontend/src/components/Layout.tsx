@@ -49,7 +49,7 @@ export default function Layout() {
         </div>
       </main>
 
-      <VoiceAssistant voiceEndpoint="http://127.0.0.1:8766" />
+      <VoiceAssistant voiceEndpoint={window.location.origin || "http://127.0.0.1:8766"} />
     </div>
   );
 }
