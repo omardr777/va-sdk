@@ -23,6 +23,9 @@ tts = ["kokoro-onnx>=0.2.0"]
 [project.scripts]
 va-sdk = "va_sdk.cli:main"
 
+[tool.setuptools.package-data]
+va_sdk = ["dashboard/**/*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

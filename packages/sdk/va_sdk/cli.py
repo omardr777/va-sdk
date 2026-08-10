@@ -23,27 +23,33 @@ def serve(args: list[str]) -> None:
     tool_path = None
     asr_backend = DEFAULT_ASR_BACKEND
     tts_backend = DEFAULT_TTS_BACKEND
+    model_backend = "mlx"
+    api_key: str | None = None
+    model_name: str = ""
 
     i = 0
     while i < len(args):
         if args[i] == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-            i += 2
+            port = int(args[i + 1]); i += 2
         elif args[i] == "--tools" and i + 1 < len(args):
-            tool_path = args[i + 1]
-            i += 2
+            tool_path = args[i + 1]; i += 2
         elif args[i] == "--asr-backend" and i + 1 < len(args):
-            asr_backend = args[i + 1]
-            i += 2
+            asr_backend = args[i + 1]; i += 2
         elif args[i] == "--tts-backend" and i + 1 < len(args):
-            tts_backend = args[i + 1]
-            i += 2
+            tts_backend = args[i + 1]; i += 2
+        elif args[i] == "--backend" and i + 1 < len(args):
+            model_backend = args[i + 1]; i += 2
+        elif args[i] == "--api-key" and i + 1 < len(args):
+            api_key = args[i + 1]; i += 2
+        elif args[i] == "--model" and i + 1 < len(args):
+            model_name = args[i + 1]; i += 2
         else:
             i += 1
 
     if tool_path is None:
         print("Error: --tools <path> is required")
-        print("Usage: va-sdk serve --tools ./voice_tools.py [--port 8766] [--slm-port 8002] "
+        print("Usage: va-sdk serve --tools ./voice_tools.py [--port 8766] "
+              "[--backend mlx|openai] [--model gpt-4o] [--api-key sk-...] "
               "[--asr-backend whisper] [--tts-backend kokoro|mac-say]")
         sys.exit(1)
 
@@ -51,6 +57,10 @@ def serve(args: list[str]) -> None:
     os.environ["VA_SDK_TOOL_PATH"] = tool_path
     os.environ["VA_SDK_ASR_BACKEND"] = asr_backend
     os.environ["VA_SDK_TTS_BACKEND"] = tts_backend
+    os.environ["VA_SDK_MODEL_BACKEND"] = model_backend
+    os.environ["VA_SDK_MODEL_NAME"] = model_name
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
 
     slm_port = DEFAULT_MLX_SLM_PORT
     i = 0

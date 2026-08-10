@@ -44,7 +44,6 @@ def _load_toolkit():
 
 def _build_pipeline():
     from va_sdk.asr import WhisperASR
-    from va_sdk.models.mlx_backend import MLXBackend
     from va_sdk.orchestrator import VoiceOrchestrator
     from va_sdk.pipeline import VoicePipeline
     from va_sdk.telemetry import ConsoleTelemetry, InMemoryCollector
@@ -54,8 +53,22 @@ def _build_pipeline():
     _collector = InMemoryCollector(delegate=ConsoleTelemetry())
 
     toolkit = _load_toolkit()
-    slm_port = int(os.environ.get("VA_SDK_SLM_PORT", "8002"))
-    model = MLXBackend(base_url=f"http://localhost:{slm_port}/v1")
+
+    backend = os.environ.get("VA_SDK_MODEL_BACKEND", "mlx")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    model_name = os.environ.get("VA_SDK_MODEL_NAME", "")
+
+    if backend == "openai":
+        from va_sdk.models.openai_backend import OpenAIBackend
+        model = OpenAIBackend(
+            api_key=api_key,
+            model=model_name or "gpt-4o",
+        )
+    else:
+        from va_sdk.models.mlx_backend import MLXBackend
+        slm_port = int(os.environ.get("VA_SDK_SLM_PORT", "8002"))
+        model = MLXBackend(base_url=f"http://localhost:{slm_port}/v1")
+
     orchestrator = VoiceOrchestrator(toolkit, model, telemetry=_collector)
 
     asr_backend = os.environ.get("VA_SDK_ASR_BACKEND", "whisper")
@@ -123,6 +136,31 @@ def startup():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/dashboard")
+async def dashboard_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard/")
+
+
+@app.get("/dashboard/")
+async def dashboard_index():
+    from fastapi.responses import HTMLResponse
+    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard", "index.html")
+    if os.path.exists(dashboard_path):
+        return HTMLResponse(open(dashboard_path).read())
+    return HTMLResponse("<h1>Dashboard not bundled. Run from source: cd packages/frontend && npm run dev</h1>", status_code=404)
+
+
+@app.get("/dashboard/{path:path}")
+async def dashboard_static(path: str):
+    from fastapi.responses import FileResponse
+
+    file_path = os.path.join(os.path.dirname(__file__), "dashboard", path)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.get("/events")
