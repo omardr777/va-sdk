@@ -1,60 +1,61 @@
 # va-sdk — Voice Assistant SDK
 
-Toolkit for SaaS developers to voice-enable their APIs using Small Language
-Models (SLMs).
+**Agentic-first.** Tell an AI agent to voice-enable your API and it handles
+everything — tool registration, dataset generation, training, and serving.
 
-> **Status:** Alpha. Phase 1 implementation in progress.
+## Agentic Quickstart
 
-## Quickstart (Phase 1 — coming soon)
+```
+User: "Voice-enable my banking API at http://localhost:8001"
+
+Agent:
+  1. Reads your OpenAPI spec (or source code)
+  2. Generates voice_tools.py with proper Tool definitions
+  3. Validates: va-sdk validate --tools voice_tools.py
+  4. Generates training data: va-sdk generate --tools voice_tools.py
+  5. Serves: va-sdk serve --tools voice_tools.py
+  6. Opens the dashboard to test live
+```
+
+The agent uses the [voice-enable skill](.opencode/skills/voice-enable/SKILL.md).
+
+## Manual Quickstart
 
 ```bash
 pip install va-sdk
 
-# Write your tools
-cat > voice_tools.py <<'EOF'
-from va_sdk import Tool, Param, Toolkit, ToolError
+# Start the voice server with banking template
+va-sdk serve --tools templates/banking/tools.py
 
-tools = [
-    Tool(
-        name="check_balance",
-        description="Check the balance of a bank account.",
-        params=[
-            Param("account_type", type="string",
-                  enum=["checking", "savings", "credit"],
-                  description="Type of account", prompt="which account"),
-        ],
-        call=lambda api, account_type: api.get(f"/accounts?type={account_type}"),
-        map_result=lambda data, args: {"balance": data[0]["balance"]},
-        success_template="Your {account_type} balance is ${balance:.2f}.",
-        error_template="Couldn't check {account_type}: {error_message}.",
-    ),
-]
+# Test via text
+curl -X POST http://localhost:8766/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"text": "check my checking balance", "auth_context": {"token": "demo"}}'
+```
 
-toolkit = Toolkit(
-    tools=tools,
-    api_factory=lambda auth: BankAPI(auth["token"]),
-)
-EOF
+## CLI Commands
 
-# Start the voice server
-va-sdk serve --tools voice_tools.py
+```bash
+va-sdk serve --tools voice_tools.py    # Start voice pipeline server
+va-sdk generate --tools voice_tools.py # Generate fine-tuning dataset
+va-sdk validate --tools voice_tools.py # Validate tool registry
 ```
 
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture
-overview and [docs/ADR/](docs/adr/) for architected decisions.
+overview and [docs/adr/](docs/adr/) for architecture decisions.
 
 ## Project Structure
 
 ```
 va-sdk/
+├── .opencode/skills/      # Agent skill — tells AI how to voice-enable APIs
 ├── packages/
-│   ├── sdk/          # Python SDK (pip install va-sdk)
-│   ├── frontend/     # React dashboard (Dataset Studio + Voice Playground)
-│   └── react-widget/ # @va-sdk/react VoiceAssistant FAB component
-├── templates/        # Shipped domain starter packs
-│   └── banking/      # Banking seed conversations + tool definitions
+│   ├── sdk/               # pip install va-sdk
+│   ├── frontend/          # React dashboard
+│   └── react-widget/      # @va-sdk/react FAB component
+├── templates/banking/     # Shipped banking seed templates
 └── docs/
     ├── CONTEXT.md
     ├── ARCHITECTURE.md
