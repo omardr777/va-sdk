@@ -5,100 +5,60 @@ description: Voice-enable a SaaS API using va-sdk. Generates tool registries, fi
 
 # Voice-Enable Your API
 
-## Quick start
+The agent reads the developer's backend, generates a tool registry, then
+the developer opens the dashboard to test, generate training data, train on
+Modal, and serve with their fine-tuned model.
 
-The agent's job: read the developer's backend, generate a tool registry, produce
-training data, and optionally train and serve the voice pipeline. The developer
-just says "voice-enable my API" and the agent handles everything.
-
-## Phase 0 — Install va-sdk (do this first)
-
-Before anything else, install the package:
+## Phase 0 — Install
 
 ```bash
-# If va-sdk is a sibling directory (common during development):
-pip install "$(cd .. && pwd)/va-sdk/packages/sdk"
+pip install va-sdk httpx
 
-# Or from git:
-pip install "va-sdk @ git+file://$HOME/...va-sdk/packages/sdk"
-
-# Or if published to PyPI:
-pip install va-sdk
+# Verify
+va-sdk --help
 ```
-
-Verify with: `python -c "from va_sdk import Tool; print('ok')"`
-
-Also install backend dependencies needed for the generated `voice_tools.py`:
-`httpx` (used by the `BankAPI` client in the tool registry).
 
 ## Phase 1 — Discover the Backend
 
-First, understand what the backend can do:
+1. **Find the OpenAPI spec** — `GET /openapi.json`, `/docs`, or read source.
+2. **If no spec exists**, read route definitions, schemas, and auth mechanism.
+3. **Document**: base URL, auth method, all endpoints (method, path, params, response).
 
-1. **Find the OpenAPI spec** — Look for `openapi.json`, `openapi.yaml`,
-   FastAPI `/docs` endpoints, `swagger.json`, or `schema.graphql`.
-   Try `GET /openapi.json` and `GET /docs` on the backend URL.
+## Phase 2 — Generate voice_tools.py
 
-2. **If no spec exists**, read the source code directly. Look for:
-   - Route definitions (`@app.get`, `@router.post`, Express routes, etc.)
-   - Request/response schemas (Pydantic models, Zod types, etc.)
-   - Auth mechanism (JWT, API key, session cookie, etc.)
+Create `voice_tools.py` with `Tool` + `Toolkit`. See
+[TOOL_REGISTRY_SPEC.md](references/TOOL_REGISTRY_SPEC.md).
 
-3. **Document what you found**:
-   - Base URL
-   - Auth method (and how to get a token)
-   - List of endpoints with HTTP method, path, parameters, and response shape
-
-## Phase 2 — Generate the Tool Registry
-
-Create `voice_tools.py` using the va-sdk `Tool` class. See
-[references/TOOL_REGISTRY_SPEC.md](references/TOOL_REGISTRY_SPEC.md) for the full
-API reference.
-
-**Rules for good tool design:**
-
-1. **Consolidate**: One voice intent may call multiple endpoints.
-   E.g. "cancel card" → GET /cards to find → POST /cards/{id}/cancel.
-   Write a single `call` lambda that chains them.
-
-2. **Descriptions matter**: Write 2-4 sentence descriptions covering what the
-   tool does, when to use it, and when NOT to use it.
-
-3. **Every param needs `prompt`**: This is what the assistant says when
-   eliciting a missing slot. Use natural language.
-
-4. **Auth flows through `api_factory`**: The lambda receives an `api` object
-   as its first argument. The `api_factory` creates it from `auth_context`.
-
-5. **Raise `ToolError` on failures**: Use `.not_found()`, `.validation()`,
-   `.auth_expired()`, `.generic()`.
-
-6. **Meta tools are built-in**: `greeting`, `goodbye`, `thank_you`,
-   `intent_unclear`, `speak_to_human` are handled by the orchestrator
-   automatically. Don't register them as Tools.
-
-**Minimal example:**
+**Rules:**
+1. **Consolidate** — one voice intent can call multiple endpoints
+2. **Descriptions** — 2-4 sentences: what, when, when-not
+3. **Every required param needs `prompt`** — natural language slot elicitation
+4. **`api_factory` receives `auth_context`** — `lambda auth_ctx: MyAPI(auth_ctx.get("token"))`
+5. **Raise `ToolError`** — `.not_found()`, `.validation()`, `.auth_expired()`, `.generic()`
+6. **Meta tools are built-in** — don't register `greeting`, `goodbye`, `thank_you`, `intent_unclear`, `speak_to_human`
 
 ```python
 import httpx
 from va_sdk import Tool, Param, Toolkit, ToolError
 
 class MyAPI:
-    def __init__(self, token: str):
-        self.http = httpx.Client(
-            base_url="http://localhost:8001",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    def __init__(self, token: str | None = None):
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self.http = httpx.Client(base_url="http://localhost:8001", headers=headers)
     def get(self, path, **kw):
-        resp = self.http.get(path, **kw)
-        if resp.status_code >= 400:
-            detail = resp.json().get("detail", "Backend error")
-            if resp.status_code == 401:
-                raise ToolError.auth_expired("Session expired.")
-            if "not found" in str(detail).lower():
-                raise ToolError.not_found(str(detail))
-            raise ToolError.generic(str(detail))
-        return resp.json()
+        r = self.http.get(path, **kw)
+        if r.status_code == 401: raise ToolError.auth_expired("Session expired")
+        if r.status_code >= 400:
+            d = r.json().get("detail", "Backend error")
+            if "not found" in str(d).lower(): raise ToolError.not_found(str(d))
+            raise ToolError.generic(str(d))
+        return r.json()
+    def post(self, path, json=None, **kw):
+        r = self.http.post(path, json=json, **kw)
+        if r.status_code == 401: raise ToolError.auth_expired("Session expired")
+        if r.status_code >= 400:
+            raise ToolError.generic(r.json().get("detail", "Backend error"))
+        return r.json()
 
 tools = [
     Tool(
@@ -108,13 +68,10 @@ tools = [
         params=[
             Param("account_type", type="string",
                   enum=["checking", "savings", "credit"],
-                  description="Type of account",
-                  prompt="which account"),
+                  description="Type of account", prompt="which account"),
         ],
-        call=lambda api, account_type: api.get(
-            "/accounts", params={"type": account_type}
-        ),
-        map_result=lambda data, args: {"balance": data[0]["balance"]},
+        call=lambda api, account_type: api.get("/accounts", params={"type": account_type}),
+        map_result=lambda data, args: {"balance": data[0]["balance"] if data else 0},
         success_template="Your {account_type} balance is ${balance:.2f}.",
         error_template="Couldn't check balance: {error_message}.",
         category="banking",
@@ -123,7 +80,7 @@ tools = [
 
 toolkit = Toolkit(
     tools=tools,
-    api_factory=lambda auth_ctx: MyAPI(auth_ctx["token"]),
+    api_factory=lambda auth_ctx: MyAPI(auth_ctx.get("token") if auth_ctx else None),
 )
 ```
 
@@ -133,45 +90,63 @@ toolkit = Toolkit(
 va-sdk validate --tools voice_tools.py
 ```
 
-Fix any issues reported before continuing.
-
-## Phase 4 — Generate Training Data
+## Phase 4 — Test & Generate from the Dashboard
 
 ```bash
-va-sdk generate \
-  --tools voice_tools.py \
-  --output ./data \
-  --tiers 1,2 \
-  --model gpt-4o \
-  --n-prompts 3
+va-sdk serve --tools voice_tools.py
 ```
 
-This will:
-- Enumerate every valid argument combination from your tool params
-- Use the teacher model to generate natural-sounding user prompts
-- Generate multi-turn slot-filling conversations
-- Validate all output against the tool schemas
-- Export `data/train.jsonl` and `data/test.jsonl`
+This starts the server on port 8766. Open `http://localhost:8766/dashboard`.
 
-Requires `OPENAI_API_KEY` in the environment.
+**The dashboard is bundled in the pip package — no cloning needed.**
 
-## Phase 5 — Train (Optional)
+From the dashboard, everything happens in the browser:
+- **Playground tab**: enter API key → Connect → your tools auto-populate → test voice
+- **Dataset tab**: enter API key → click Generate → `train.jsonl` + `test.jsonl` exported
+- **Train section** (in Dataset tab): enter Modal token → click Train → job submitted
 
-Send the generated dataset to Modal or your fine-tuning platform. The data is in
-OpenAI fine-tuning JSONL format.
+No CLI flags needed. All API keys, model selection, and config are set in the UI.
 
-## Phase 6 — Serve
+Backend options (configured in the Playground tab):
+- `openai` — uses GPT-4o (or any OpenAI model). Needs API key.
+- `local` — uses a local llama.cpp server pointed at your fine-tuned model.
+- `mlx` — uses an MLX server on Apple Silicon (not needed for most users).
+
+## Phase 5 — Train on Modal (Optional)
+
+From the Dataset Studio page, after generating data:
+1. Enter your Modal API token
+2. Select base model (default: `Qwen/Qwen2.5-0.5B-Instruct`)
+3. Click "Train on Modal"
+4. Status polls automatically: submitted → running → done
+5. Weights download to `./models/`
+
+The dashboard calls `POST /api/train` with the config. The server runs
+`va_sdk.dataset.modal_train.ModalTrainer` which uploads the dataset to Modal
+and runs a LoRA fine-tune on a GPU.
+
+## Phase 6 — Serve Your Fine-Tuned Model
+
+Once trained, start your local model server:
 
 ```bash
-va-sdk serve \
-  --tools voice_tools.py \
-  --port 8766 \
-  --slm-port 8002 \
-  --asr-backend whisper \
-  --tts-backend kokoro
+# Start llama.cpp pointing at your fine-tuned weights
+llama-server -m ./models/va-sdk-xxx.gguf --port 8080
+
+# Serve with your model
+va-sdk serve --tools voice_tools.py --backend local --model local
 ```
 
-Then open the dashboard (`cd packages/frontend && npm run dev`) to test.
+This runs the full voice pipeline (ASR → SLM → Tool Execution → TTS) using YOUR
+fine-tuned model — no cloud API needed.
+
+Endpoints for your frontend:
+| Endpoint | Description |
+|---|---|
+| `POST /orchestrate` | Text in → text out. `{"text": "...", "auth_context": {...}}` |
+| `POST /voice` | Audio in → audio out (base64 WAV) |
+| `POST /stream` | Audio in → NDJSON streaming progress |
+| `GET /events` | Telemetry: turn_complete, error, slm_call, tool_execute, slot_fill |
 
 ## Phase 7 — Embed in Your App
 
@@ -185,5 +160,21 @@ import { VoiceAssistant } from "@va-sdk/react";
 />
 ```
 
-See [references/EXAMPLES.md](references/EXAMPLES.md) for complete examples and
-[references/TRAINING.md](references/TRAINING.md) for the full training pipeline.
+## Server API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `GET` | `/api/tools` | List all registered tools with params |
+| `POST` | `/api/configure` | Set backend config `{backend, api_key, model}` |
+| `GET` | `/events` | Recent telemetry events |
+| `POST` | `/orchestrate` | Text → text. `{text, auth_context}` |
+| `POST` | `/voice` | Audio → audio (multipart) |
+| `POST` | `/stream` | Audio → NDJSON streaming |
+| `POST` | `/api/generate` | Dataset generation `{tiers, model, api_key, n_prompts, output_dir}` |
+| `POST` | `/api/train` | Modal training `{modal_token, model, train_path, test_path}` |
+| `GET` | `/api/train/{id}` | Training job status |
+| `GET` | `/dashboard` | Bundled React dashboard |
+
+See [EXAMPLES.md](references/EXAMPLES.md) for complete patterns and
+[TRAINING.md](references/TRAINING.md) for the training pipeline details.
