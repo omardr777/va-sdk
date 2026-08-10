@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { VoiceAssistant } from "@va-sdk/react";
+import VoiceAssistant from "./VoiceAssistant";
 
 const NAV_ITEMS = [
   { to: "/playground", label: "Voice Playground", icon: "M9.09 15.59L11.08 17.58L16.42 12.24L11.08 6.9L9.09 8.89L11.67 11.47L3 11.47V13.47L11.67 13.47L9.09 15.59ZM21 3H3C1.9 3 1 3.9 1 5V19C1 20.1 1.9 21 3 21H21C22.1 21 23 20.1 23 19V5C23 3.9 22.1 3 21 3ZM21 19H3V5H21V19Z" },
