@@ -13,15 +13,20 @@ from va_sdk.dataset.generator import (
 )
 from va_sdk.dataset.validator import validate_conversation, validate_dataset
 from va_sdk.dataset.exporter import export_jsonl
+from va_sdk.dataset.store import DatasetStore
+from va_sdk.dataset.extractor import extract_params, generate_conversation_draft
 
 __all__ = [
     "Conversation",
+    "DatasetStore",
     "GenerationResult",
     "TeacherClient",
     "Turn",
     "enumerate_all_invocations",
     "enumerate_invocations",
+    "extract_params",
     "format_seed_conversation",
+    "generate_conversation_draft",
     "generate_dataset",
     "generate_single_turn_prompts",
     "generate_slot_filling_turns",

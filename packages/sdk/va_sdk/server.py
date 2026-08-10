@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,6 +26,7 @@ _pipeline = None
 _collector = None
 _toolkit = None
 _config: dict = {}
+_storage: Any = None
 
 
 def _load_toolkit():
@@ -75,11 +77,23 @@ def _build_pipeline():
     asr = None
     tts = None
 
-    asr_backend = os.environ.get("VA_SDK_ASR_BACKEND", "whisper")
+    asr_backend = os.environ.get("VA_SDK_ASR_BACKEND", "qwen-mlx")
     if asr_backend == "whisper":
         try:
             from va_sdk.asr import WhisperASR
             asr = WhisperASR()
+        except ImportError:
+            pass
+    elif asr_backend == "qwen":
+        try:
+            from va_sdk.asr import Qwen3ASR
+            asr = Qwen3ASR()
+        except ImportError:
+            pass
+    elif asr_backend == "qwen-mlx":
+        try:
+            from va_sdk.asr import MLXQwenASR
+            asr = MLXQwenASR()
         except ImportError:
             pass
 
@@ -136,8 +150,12 @@ def _stream_event(payload: dict) -> str:
 
 @app.on_event("startup")
 def startup():
+    global _storage
+    from va_sdk.dataset.store import DatasetStore
     _load_toolkit()
+    _storage = DatasetStore()
     print(f"✓ Toolkit loaded ({len(_toolkit.tools)} tools)")
+    print(f"✓ Seed store ready ({_storage.count} conversations)")
     print("  Configure a model backend from the dashboard or POST /api/configure")
     print("  Dashboard: http://localhost:8766/dashboard")
 
@@ -456,6 +474,227 @@ async def get_training_status(job_id: str):
     if job is None:
         return JSONResponse({"error": "Job not found"}, status_code=404)
     return job
+
+
+# ---------------------------------------------------------------------------
+# Seeds (manual dataset creation)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/seeds")
+async def get_seeds(tool: str | None = None, source: str | None = None):
+    if _storage is None:
+        return {"conversations": [], "count": 0}
+    convos = _storage.list(tool=tool, source=source)
+    return {"conversations": convos, "count": len(convos)}
+
+
+@app.post("/api/seeds")
+async def add_seed(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    messages = body.get("messages", [])
+    if not messages:
+        return JSONResponse({"error": "messages required"}, status_code=400)
+
+    tools = _load_toolkit().to_openai_tools()
+    conv = {
+        "messages": messages,
+        "tools": tools,
+        "source": body.get("source", "manual"),
+        "tool": body.get("tool", ""),
+    }
+
+    from va_sdk.dataset.validator import validate_conversation
+    errors = validate_conversation(conv, list(_load_toolkit().tools))
+    if errors:
+        return JSONResponse({"error": f"Validation failed: {errors[0]}", "errors": errors}, status_code=400)
+
+    saved = _storage.add(conv)
+    return {"id": saved["id"], "status": "saved"}
+
+
+@app.put("/api/seeds/{seed_id}")
+async def update_seed(seed_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    messages = body.get("messages", [])
+    if not messages:
+        return JSONResponse({"error": "messages required"}, status_code=400)
+
+    tools = _load_toolkit().to_openai_tools()
+    conv = {
+        "messages": messages,
+        "tools": tools,
+        "source": body.get("source", "manual"),
+        "tool": body.get("tool", ""),
+    }
+
+    ok = _storage.update(seed_id, conv)
+    if not ok:
+        return JSONResponse({"error": "Seed not found"}, status_code=404)
+    return {"status": "updated"}
+
+
+@app.delete("/api/seeds/{seed_id}")
+async def delete_seed(seed_id: str):
+    ok = _storage.delete(seed_id)
+    if not ok:
+        return JSONResponse({"error": "Seed not found"}, status_code=404)
+    return {"status": "deleted"}
+
+
+@app.post("/api/seed/transcribe")
+async def seed_transcribe(audio: UploadFile):
+    try:
+        audio_data = await audio.read()
+        if len(audio_data) < 1000:
+            return JSONResponse({"error": "Audio too short"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Invalid audio"}, status_code=400)
+
+    suffix = _audio_suffix(audio.filename, audio.content_type)
+
+    import subprocess, tempfile
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(audio_data)
+        input_path = tmp.name
+
+    wav_path = input_path + ".wav"
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000", "-ac", "1", "-f", "s16le", "-",
+        ], capture_output=True, check=True, stdout=subprocess.PIPE)
+        pcm_data = subprocess.run([
+            "ffmpeg", "-y", "-i", input_path,
+            "-ar", "16000", "-ac", "1", "-f", "s16le", "-",
+        ], capture_output=True, check=True).stdout
+    except Exception:
+        return JSONResponse({"error": "Audio decode failed. ffmpeg required."}, status_code=400)
+    finally:
+        try:
+            os.unlink(input_path)
+        except OSError:
+            pass
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
+
+    try:
+        audio_np = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+
+        asr_backend = os.environ.get("VA_SDK_ASR_BACKEND", "qwen-mlx")
+        transcript = ""
+
+        if asr_backend == "qwen-mlx":
+            try:
+                from va_sdk.asr import MLXQwenASR
+                asr = MLXQwenASR()
+                transcript = asr.transcribe(audio_np, 16000)
+            except ImportError:
+                return JSONResponse({"error": "MLXQwenASR not available. Install qwen_asr or use --asr-backend whisper"}, status_code=400)
+        elif asr_backend == "qwen":
+            try:
+                from va_sdk.asr import Qwen3ASR
+                asr = Qwen3ASR()
+                transcript = asr.transcribe(audio_np, 16000)
+            except ImportError:
+                return JSONResponse({"error": "Qwen3ASR not available. Install qwen_asr"}, status_code=400)
+        else:
+            try:
+                from va_sdk.asr import WhisperASR
+                asr = WhisperASR()
+                transcript = asr.transcribe(audio_np, 16000)
+            except ImportError:
+                return JSONResponse({"error": "No ASR backend available. Install openai-whisper"}, status_code=400)
+
+        return {"transcript": transcript}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/seed/extract")
+async def seed_extract(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    transcript = body.get("transcript", "")
+    tool_name = body.get("tool_name", "")
+    if not transcript or not tool_name:
+        return JSONResponse({"error": "transcript and tool_name required"}, status_code=400)
+
+    toolkit = _load_toolkit()
+    tool = toolkit.get(tool_name)
+    if tool is None:
+        return JSONResponse({"error": f"Unknown tool: {tool_name}"}, status_code=400)
+
+    api_key = _config.get("api_key", os.environ.get("OPENAI_API_KEY", ""))
+    model = _config.get("model", "gpt-4o")
+
+    try:
+        from va_sdk.dataset.extractor import extract_params
+        params = extract_params(transcript, tool_name, tool.to_openai_tool(), api_key=api_key, model=model)
+        return {"arguments": params}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/seed/ai-assist")
+async def seed_ai_assist(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    description = body.get("description", "")
+    turns = body.get("turns", 4)
+    include_asr_noise = body.get("include_asr_noise", True)
+    prompt_template = body.get("prompt", None)
+
+    if not description:
+        return JSONResponse({"error": "description required"}, status_code=400)
+
+    api_key = _config.get("api_key", os.environ.get("OPENAI_API_KEY", ""))
+    model = _config.get("model", "gpt-4o")
+    toolkit = _load_toolkit()
+    tools = toolkit.to_openai_tools()
+
+    try:
+        from va_sdk.dataset.extractor import generate_conversation_draft
+        conv = generate_conversation_draft(
+            tools=tools,
+            description=description,
+            turns=turns,
+            include_asr_noise=include_asr_noise,
+            prompt_template=prompt_template,
+            api_key=api_key,
+            model=model,
+        )
+        return {"conversation": conv}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/seeds/export")
+async def export_seeds(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    output_dir = body.get("output_dir", "./data")
+    train_split = body.get("train_split", 0.8)
+
+    result = _storage.export(output_dir, train_split=train_split)
+    return result
 
 
 # ---------------------------------------------------------------------------

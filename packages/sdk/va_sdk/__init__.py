@@ -2,7 +2,7 @@ from va_sdk.tool import Param, Tool, ToolError, Toolkit
 from va_sdk.orchestrator import VoiceOrchestrator
 from va_sdk.models.backend import ModelBackend, ToolCall
 from va_sdk.pipeline import VoicePipeline, PipelineResult, InMemoryStore
-from va_sdk.asr import ASRBackend, WhisperASR
+from va_sdk.asr import ASRBackend, MLXQwenASR, Qwen3ASR, WhisperASR
 from va_sdk.tts import TTSBackend, KokoroTTS, MacSayTTS
 from va_sdk.telemetry import (
     ConsoleTelemetry,
@@ -35,6 +35,8 @@ __all__ = [
     "ToolCall",
     "ASRBackend",
     "WhisperASR",
+    "Qwen3ASR",
+    "MLXQwenASR",
     "TTSBackend",
     "KokoroTTS",
     "MacSayTTS",
